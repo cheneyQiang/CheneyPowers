@@ -20,9 +20,11 @@ You don't need to invoke skills manually. They auto-trigger because the bootstra
 
 ## Installation
 
-CheneyPowers ships as a Python package. Install the package with pip, then run one command to drop the plugin into your Claude Code plugins directory.
+CheneyPowers ships as a Python package and a Claude Code plugin in the same repo. Install the package with pip, then run one command — the `cheneypowers` CLI delegates to `claude plugin marketplace add` + `claude plugin install` under the hood, so the plugin is registered exactly the way Claude Code expects.
 
-### From a local checkout (the path used in v1)
+**Prerequisite:** the `claude` CLI must already be on your PATH. If it lives somewhere unusual, set `CHENEYPOWERS_CLAUDE_BIN=/absolute/path/to/claude`.
+
+### From a local checkout (the path used in v0.x)
 
 ```bash
 git clone <your-fork-url> cheneypowers
@@ -31,7 +33,12 @@ pip install -e .
 cheneypowers install
 ```
 
-`cheneypowers install` creates a symlink at `~/.claude/plugins/cheneypowers` pointing at the plugin payload inside the installed package. Restart Claude Code (or open a new session) and the plugin is active.
+`cheneypowers install` runs:
+
+1. `claude plugin marketplace add <payload-dir> --scope user` — registers this repo as a local marketplace named `cheneypowers-dev`.
+2. `claude plugin install cheneypowers@cheneypowers-dev --scope user` — enables the plugin in user scope.
+
+Restart Claude Code (or open a new session) and the plugin is active. Both Claude CLI calls are idempotent, so it is safe to rerun.
 
 ### From PyPI (when published)
 
@@ -44,24 +51,22 @@ cheneypowers install
 
 ### Platform notes
 
-| Platform | Default deploy mode | Fallback |
-|----------|--------------------|----------|
-| macOS / Linux | `os.symlink` | error out with a helpful message |
-| Windows (Developer Mode on, or admin) | `os.symlink` | directory junction → copy |
-| Windows (no privileges) | directory junction (`mklink /J`) | copy |
-
-When the deploy mode is `copy`, you must rerun `cheneypowers install` after every `pip install --upgrade`.
+Deployment is identical across macOS, Linux, and Windows because all the filesystem work is done by the `claude` CLI rather than by this installer. There are no symlink / junction / copy modes any more.
 
 ## CLI Reference
 
 ```text
-cheneypowers install   [--force] [--mode {symlink,junction,copy}] [--target PATH]
-cheneypowers uninstall [--target PATH]
-cheneypowers status
+cheneypowers install   [--source PATH] [--scope {user,project,local}] [--force]
+cheneypowers uninstall [--force]
+cheneypowers status    [--source PATH]
 cheneypowers --version
 ```
 
-`cheneypowers status` prints the package version, the payload directory inside `site-packages`, the install target under `~/.claude/plugins/`, the deploy mode in use, and whether the link is healthy.
+- `--source PATH` — override the marketplace source. Defaults to the payload that ships with the installed package (i.e. the repo root for editable installs, `site-packages/cheneypowers/_payload` for wheels).
+- `--scope` — forwarded to `claude plugin marketplace add` / `claude plugin install`. Defaults to `user`.
+- `--force` on `install` — tear down any prior registration first, then re-add. Useful when developing the plugin.
+
+`cheneypowers status` prints the package version, the marketplace source path, whether the marketplace is registered, and whether the plugin is enabled. If the `claude` CLI is missing, status still prints what it can and explains how to fix it.
 
 ## Updating
 
@@ -69,16 +74,16 @@ cheneypowers --version
 pip install --upgrade cheneypowers   # or `pip install -e .` after `git pull`
 ```
 
-If the deploy mode is `symlink` or `junction`, the upgrade is picked up the next time Claude Code opens a session — no need to rerun `install`. If the deploy mode is `copy`, run `cheneypowers install` again to refresh the payload.
+When you upgrade an editable install, Claude Code sees the new payload immediately on the next session — the marketplace source still points at your working tree. For a wheel-based install, the source points at `site-packages/cheneypowers/_payload/`, which pip overwrites on upgrade, so the next session also picks up the new content. You only need to rerun `cheneypowers install` if you change `--scope` or `--source`.
 
 ## Uninstalling
 
 ```bash
-cheneypowers uninstall   # removes ~/.claude/plugins/cheneypowers
+cheneypowers uninstall   # claude plugin uninstall + claude plugin marketplace remove
 pip uninstall cheneypowers
 ```
 
-Always run `cheneypowers uninstall` *before* `pip uninstall`, otherwise you may leave a dangling symlink that Claude Code will complain about.
+Run `cheneypowers uninstall` *before* `pip uninstall`. After `pip uninstall`, the bundled payload path goes away and any leftover marketplace registration would point at a non-existent directory.
 
 ## What's Inside — Skills Library
 

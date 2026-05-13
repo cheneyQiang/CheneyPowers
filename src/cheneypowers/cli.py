@@ -1,12 +1,13 @@
 """CLI entry point for CheneyPowers.
 
 Implements ``cheneypowers {install,uninstall,status}`` plus ``--version``.
-Exit codes follow PRD §5.4:
+
+Exit codes:
 
 * 0 — success
 * 1 — generic error
-* 2 — target already exists and is not managed (use ``--force``)
-* 3 — unsupported deployment mode for this platform
+* 2 — legacy: target already exists in an unrecognised form
+* 3 — the ``claude`` CLI is unavailable
 """
 
 from __future__ import annotations
@@ -16,21 +17,17 @@ import sys
 from pathlib import Path
 from typing import Optional, Sequence
 
-from . import __version__, payload_dir
+from . import __version__
 from . import installer as deployer
-from .installer import (
-    EXIT_GENERIC,
-    EXIT_OK,
-    InstallError,
-)
+from .installer import EXIT_GENERIC, EXIT_OK, InstallError
 
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="cheneypowers",
         description=(
-            "CheneyPowers — install / uninstall / inspect the Claude Code "
-            "plugin payload shipped with this Python package."
+            "CheneyPowers — register the bundled Claude Code plugin via the "
+            "`claude` CLI."
         ),
     )
     parser.add_argument(
@@ -45,57 +42,49 @@ def _build_parser() -> argparse.ArgumentParser:
     # install ---------------------------------------------------------------
     p_install = sub.add_parser(
         "install",
-        help="Deploy the plugin payload into Claude Code's plugins directory.",
+        help="Register the plugin marketplace and install the plugin via the Claude CLI.",
     )
     p_install.add_argument(
-        "--target",
+        "--source",
         type=Path,
         default=None,
-        help="Override deployment target (default: ~/.claude/plugins/cheneypowers).",
+        help="Marketplace source directory (default: the payload shipped with this package).",
     )
     p_install.add_argument(
-        "--mode",
-        choices=["auto", "symlink", "junction", "copy"],
-        default="auto",
-        help="Deployment mode. 'auto' picks the best available for your OS.",
+        "--scope",
+        choices=["user", "project", "local"],
+        default="user",
+        help="Claude Code scope to install into (default: user).",
     )
     p_install.add_argument(
         "--force",
         action="store_true",
-        help="If the target already exists and is not managed by us, "
-             "back it up and replace it instead of failing.",
+        help="Tear down any prior registration first, then re-add. Useful during development.",
     )
     p_install.set_defaults(func=_cmd_install)
 
     # uninstall -------------------------------------------------------------
     p_uninstall = sub.add_parser(
         "uninstall",
-        help="Remove a previously-installed CheneyPowers deployment.",
-    )
-    p_uninstall.add_argument(
-        "--target",
-        type=Path,
-        default=None,
-        help="Override deployment target.",
+        help="Remove the plugin and the registered marketplace.",
     )
     p_uninstall.add_argument(
         "--force",
         action="store_true",
-        help="Delete the target even if it does not look like a "
-             "CheneyPowers deployment.",
+        help="Reserved for future use; kept for backward compatibility.",
     )
     p_uninstall.set_defaults(func=_cmd_uninstall)
 
     # status ----------------------------------------------------------------
     p_status = sub.add_parser(
         "status",
-        help="Show package version, payload path, install target, mode, and link health.",
+        help="Show package version, marketplace source, registration, and plugin enablement.",
     )
     p_status.add_argument(
-        "--target",
+        "--source",
         type=Path,
         default=None,
-        help="Inspect a custom target path.",
+        help="Inspect a custom marketplace source directory.",
     )
     p_status.set_defaults(func=_cmd_status)
 
@@ -108,59 +97,79 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _cmd_install(args: argparse.Namespace) -> int:
-    result = deployer.install(target=args.target, mode=args.mode, force=args.force)
+    result = deployer.install(source=args.source, scope=args.scope, force=args.force)
     print("✅ CheneyPowers installed.")
-    print(f"   target  : {result.target}")
-    print(f"   payload : {result.payload}")
-    print(f"   mode    : {result.mode}")
-    if result.backed_up_to is not None:
-        print(f"   backup  : pre-existing target moved to {result.backed_up_to}")
-    if result.mode == "copy":
+    print(f"   source      : {result.source}")
+    print(f"   marketplace : {result.marketplace}")
+    print(f"   plugin      : {result.plugin}@{result.marketplace}")
+    print(f"   scope       : {result.scope}")
+    if result.legacy_cleaned is not None:
         print(
-            "\nℹ️  Mode is 'copy': you must rerun `cheneypowers install` "
-            "after every `pip install --upgrade cheneypowers` to refresh "
-            "the payload."
+            f"   note        : removed obsolete v0.1.x deployment at "
+            f"{result.legacy_cleaned}"
         )
-    print("\nOpen a new Claude Code session to load the plugin.")
+    print(
+        "\nOpen a new Claude Code session (or restart Claude Code) for the "
+        "plugin to load."
+    )
     return EXIT_OK
 
 
 def _cmd_uninstall(args: argparse.Namespace) -> int:
-    removed = deployer.uninstall(target=args.target, force=args.force)
-    target = args.target or deployer.default_target()
+    removed = deployer.uninstall(force=args.force)
     if removed:
-        print(f"✅ Removed {target}.")
+        print(
+            f"✅ Removed plugin '{deployer.PLUGIN_NAME}' and marketplace "
+            f"'{deployer.MARKETPLACE_NAME}'."
+        )
     else:
-        print(f"ℹ️  Nothing to remove at {target}.")
+        print("ℹ️  Nothing to remove — plugin and marketplace were not registered.")
     return EXIT_OK
 
 
 def _cmd_status(args: argparse.Namespace) -> int:
-    info = deployer.status(target=args.target)
-    health_icon = {
+    info = deployer.status(source=args.source)
+
+    icons = {
         "healthy": "✅",
-        "broken": "⚠️",
+        "partial": "⚠️",
         "missing": "—",
-    }.get(info["health"], "?")
+        "claude-cli-missing": "❌",
+    }
+    health_icon = icons.get(info["health"], "?")
 
-    bar = "─" * 60
-    print(bar)
-    print(f"  package version : {info['package_version']}")
-    print(f"  payload         : {info['payload']}")
-    print(f"  install target  : {info['target']}")
-    print(f"  link mode       : {info['mode'] or 'not installed'}")
-    print(f"  link healthy    : {health_icon} {info['health']}")
-    print(f"  managed by us   : {'yes' if info['managed'] else 'no'}")
-    print(bar)
+    def yn(value: bool) -> str:
+        return "✅ yes" if value else "—  no"
 
-    if info["health"] == "broken":
+    bar = "─" * 64
+    print(bar)
+    print(f"  package version       : {info['package_version']}")
+    print(f"  marketplace source    : {info['source']}")
+    print(f"  marketplace name      : {info['marketplace']}")
+    print(f"  marketplace registered: {yn(info['marketplace_registered'])}")
+    print(f"  plugin name           : {info['plugin']}")
+    print(f"  plugin enabled        : {yn(info['plugin_enabled'])}")
+    print(f"  scope                 : {info['scope']}")
+    print(f"  overall health        : {health_icon} {info['health']}")
+    if info["legacy_target_present"]:
         print(
-            "\n⚠️  The install target exists but its link is broken. This "
-            "usually means the Python package was uninstalled (or moved) "
-            "without first running `cheneypowers uninstall`. Run "
-            "`cheneypowers uninstall` to clean up, then `cheneypowers install` "
-            "again."
+            "  legacy v0.1 path      : ⚠️  ~/.claude/plugins/cheneypowers still "
+            "present — rerun `cheneypowers install` to clean it up"
         )
+    if not info["cli_available"]:
+        print(
+            "\n❌  The `claude` CLI is not on PATH. Install Claude Code or "
+            "set CHENEYPOWERS_CLAUDE_BIN to its absolute path."
+        )
+    print(bar)
+
+    if info["health"] == "partial":
+        print(
+            "\n⚠️  Registration is partial. Run `cheneypowers install --force` "
+            "to reset."
+        )
+    elif info["health"] == "missing":
+        print("\nRun `cheneypowers install` to register the plugin.")
     return EXIT_OK
 
 
@@ -185,4 +194,3 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
