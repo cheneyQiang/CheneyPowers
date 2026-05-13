@@ -1,19 +1,17 @@
 {
-  "name": "superpowers-dev",
-  "description": "Development marketplace for Superpowers core skills library",
+  "name": "cheneypowers-dev",
+  "description": "Development marketplace for CheneyPowers skills library",
   "owner": {
-    "name": "Jesse Vincent",
-    "email": "jesse@fsck.com"
+    "name": "CheneyQiang"
   },
   "plugins": [
     {
-      "name": "superpowers",
-      "description": "Core skills library for Claude Code: TDD, debugging, collaboration patterns, and proven techniques",
-      "version": "5.1.0",
+      "name": "cheneypowers",
+      "description": "CheneyPowers — personal skills library for Claude Code: TDD, debugging, collaboration patterns, and proven workflows.",
+      "version": "0.1.0",
       "source": "./",
       "author": {
-        "name": "Jesse Vincent",
-        "email": "jesse@fsck.com"
+        "name": "CheneyQiang"
       }
     }
   ]

@@ -5,3 +5,13 @@
 node_modules/
 inspo
 triage/
+
+# Python build / IDE
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.idea/
+.venv/
+venv/

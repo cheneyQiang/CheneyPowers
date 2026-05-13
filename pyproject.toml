@@ -1,0 +1,89 @@
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cheneypowers"
+description = "CheneyPowers — personal skills library for Claude Code, installable via pip."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [
+    { name = "CheneyQiang" },
+]
+keywords = [
+    "claude-code",
+    "skills",
+    "tdd",
+    "debugging",
+    "collaboration",
+    "workflows",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS :: MacOS X",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development",
+]
+# CheneyPowers is a zero-dependency Python tool by design.
+dependencies = []
+dynamic = ["version"]
+
+[project.scripts]
+cheneypowers = "cheneypowers.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/CheneyQiang/cheneypowers"
+
+# -------------------------------------------------------------------
+# Hatchling build config
+#
+# Source layout uses src/cheneypowers/. The plugin payload lives in the
+# repo root (`.claude-plugin/`, `hooks/`, `skills/`, `assets/`) so that
+# the repo itself is also directly usable as a Claude Code plugin during
+# development. At build time we force-include those directories into the
+# wheel under cheneypowers/_payload/, giving installed users a single,
+# self-contained payload at <site-packages>/cheneypowers/_payload/.
+# -------------------------------------------------------------------
+
+[tool.hatch.version]
+# Single source of truth for the version: .claude-plugin/plugin.json
+# scripts/bump-version.sh keeps that file in sync with marketplace.json.
+source = "regex"
+path = ".claude-plugin/plugin.json"
+pattern = '"version":\s*"(?P<version>[^"]+)"'
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cheneypowers"]
+
+[tool.hatch.build.targets.wheel.force-include]
+".claude-plugin" = "cheneypowers/_payload/.claude-plugin"
+"hooks" = "cheneypowers/_payload/hooks"
+"skills" = "cheneypowers/_payload/skills"
+"assets" = "cheneypowers/_payload/assets"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/.claude-plugin",
+    "/hooks",
+    "/skills",
+    "/assets",
+    "/README.md",
+    "/LICENSE",
+    "/RELEASE-NOTES.md",
+    "/CLAUDE.md",
+    "/pyproject.toml",
+    "/.version-bump.json",
+]
+

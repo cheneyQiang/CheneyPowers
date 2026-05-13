@@ -1,4 +1,21 @@
-# Superpowers Release Notes
+# CheneyPowers Release Notes
+
+> The history below the CheneyPowers section is preserved verbatim from the upstream Superpowers project for reference. CheneyPowers entries are listed first, in reverse chronological order.
+
+## CheneyPowers v0.1.0 (2026-05-13)
+
+### Highlights
+
+- **Personal fork** of [Superpowers](https://github.com/obra/superpowers) by Jesse Vincent, narrowed to a single harness (Claude Code) and rebranded as `CheneyPowers` / `cheneypowers`.
+- **Python installer** — the project now ships as a Python package. After `pip install -e .` (or `pip install cheneypowers` once published), running `cheneypowers install` symlinks the plugin payload into `~/.claude/plugins/cheneypowers/`. macOS / Linux use `os.symlink`; Windows falls back to directory junctions, then to copy. CLI provides `install`, `uninstall`, `status`, and `--version`.
+- **Single-harness scope** — removed `.codex-plugin/`, `.cursor-plugin/`, `.opencode/`, `gemini-extension.json`, `hooks/hooks-cursor.json`, `package.json`, the `sync-to-codex-plugin.sh` script, and the corresponding tests under `tests/codex-plugin-sync/`, `tests/opencode/`, and `tests/brainstorm-server/`. Future harness support, if ever needed, can be re-added from upstream history.
+- **Branding refresh** — `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `LICENSE`, `README.md`, and `CLAUDE.md` updated to reflect `CheneyPowers` / `CheneyQiang` ownership. Internally, skill IDs continue to use the `superpowers:<name>` namespace; that prefix is a stable cross-reference identifier across skill files and is intentionally not rebranded.
+- **SessionStart hook simplified** — `hooks/session-start` now emits Claude Code's `hookSpecificOutput.additionalContext` directly, dropping the OpenCode / Cursor / Copilot CLI branches.
+- **Contributor docs** — `AGENTS.md` and `GEMINI.md` removed (they were duplicates of `CLAUDE.md`); `CLAUDE.md` rewritten as a short repo guide replacing the upstream PR-rejection guidelines, which no longer apply to a personal fork.
+
+---
+
+## Upstream Superpowers history (for reference)
 
 ## v5.1.0 (2026-04-30)
 

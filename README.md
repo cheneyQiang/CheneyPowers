@@ -1,233 +1,120 @@
-# Superpowers
+# CheneyPowers
 
-Superpowers is a complete software development methodology for your coding agents, built on top of a set of composable skills and some initial instructions that make sure your agent uses them.
+CheneyPowers is a personal Claude Code plugin that gives the agent a complete software-development methodology — TDD, systematic debugging, design-first brainstorming, plan-driven execution, code review workflows — through a curated set of composable skills and a SessionStart hook that loads them automatically.
 
-## Quickstart
+It is a personal fork of the upstream [Superpowers](https://github.com/obra/superpowers) project, narrowed to a single harness (Claude Code) and packaged for installation via Python.
 
-Give your agent Superpowers: [Claude Code](#claude-code), [Codex CLI](#codex-cli), [Codex App](#codex-app), [Factory Droid](#factory-droid), [Gemini CLI](#gemini-cli), [OpenCode](#opencode), [Cursor](#cursor), [GitHub Copilot CLI](#github-copilot-cli).
+## How It Works
 
-## How it works
+When you open a Claude Code session, the SessionStart hook in this plugin reads `skills/using-superpowers/SKILL.md` and injects it as additional context. From that point on, the agent automatically reaches for the right skill at the right moment:
 
-It starts from the moment you fire up your coding agent. As soon as it sees that you're building something, it *doesn't* just jump into trying to write code. Instead, it steps back and asks you what you're really trying to do. 
+1. **brainstorming** — refines a rough idea into a design before any code is written.
+2. **using-git-worktrees** — sets up an isolated branch + worktree once a design is approved.
+3. **writing-plans** — breaks the design into bite-sized tasks with exact file paths and verification steps.
+4. **subagent-driven-development** / **executing-plans** — dispatches the work, with two-stage review.
+5. **test-driven-development** — enforces RED-GREEN-REFACTOR throughout implementation.
+6. **requesting-code-review** — runs a structured review pass against the plan.
+7. **finishing-a-development-branch** — verifies tests, decides merge / PR / discard, cleans up.
 
-Once it's teased a spec out of the conversation, it shows it to you in chunks short enough to actually read and digest. 
-
-After you've signed off on the design, your agent puts together an implementation plan that's clear enough for an enthusiastic junior engineer with poor taste, no judgement, no project context, and an aversion to testing to follow. It emphasizes true red/green TDD, YAGNI (You Aren't Gonna Need It), and DRY. 
-
-Next up, once you say "go", it launches a *subagent-driven-development* process, having agents work through each engineering task, inspecting and reviewing their work, and continuing forward. It's not uncommon for Claude to be able to work autonomously for a couple hours at a time without deviating from the plan you put together.
-
-There's a bunch more to it, but that's the core of the system. And because the skills trigger automatically, you don't need to do anything special. Your coding agent just has Superpowers.
-
-
-## Sponsorship
-
-If Superpowers has helped you do stuff that makes money and you are so inclined, I'd greatly appreciate it if you'd consider [sponsoring my opensource work](https://github.com/sponsors/obra).
-
-Thanks! 
-
-- Jesse
-
+You don't need to invoke skills manually. They auto-trigger because the bootstrap is loaded at session start.
 
 ## Installation
 
-Installation differs by harness. If you use more than one, install Superpowers separately for each one.
+CheneyPowers ships as a Python package. Install the package with pip, then run one command to drop the plugin into your Claude Code plugins directory.
 
-### Claude Code
+### From a local checkout (the path used in v1)
 
-Superpowers is available via the [official Claude plugin marketplace](https://claude.com/plugins/superpowers)
+```bash
+git clone <your-fork-url> cheneypowers
+cd cheneypowers
+pip install -e .
+cheneypowers install
+```
 
-#### Official Marketplace
+`cheneypowers install` creates a symlink at `~/.claude/plugins/cheneypowers` pointing at the plugin payload inside the installed package. Restart Claude Code (or open a new session) and the plugin is active.
 
-- Install the plugin from Anthropic's official marketplace:
+### From PyPI (when published)
 
-  ```bash
-  /plugin install superpowers@claude-plugins-official
-  ```
+```bash
+pip install cheneypowers
+cheneypowers install
+```
 
-#### Superpowers Marketplace
+> v0.1.0 is not yet published to PyPI. Use the local checkout flow above.
 
-The Superpowers marketplace provides Superpowers and some other related plugins for Claude Code.
+### Platform notes
 
-- Register the marketplace:
+| Platform | Default deploy mode | Fallback |
+|----------|--------------------|----------|
+| macOS / Linux | `os.symlink` | error out with a helpful message |
+| Windows (Developer Mode on, or admin) | `os.symlink` | directory junction → copy |
+| Windows (no privileges) | directory junction (`mklink /J`) | copy |
 
-  ```bash
-  /plugin marketplace add obra/superpowers-marketplace
-  ```
+When the deploy mode is `copy`, you must rerun `cheneypowers install` after every `pip install --upgrade`.
 
-- Install the plugin from this marketplace:
+## CLI Reference
 
-  ```bash
-  /plugin install superpowers@superpowers-marketplace
-  ```
+```text
+cheneypowers install   [--force] [--mode {symlink,junction,copy}] [--target PATH]
+cheneypowers uninstall [--target PATH]
+cheneypowers status
+cheneypowers --version
+```
 
-### Codex CLI
-
-Superpowers is available via the [official Codex plugin marketplace](https://github.com/openai/plugins).
-
-- Open the plugin search interface:
-
-  ```bash
-  /plugins
-  ```
-
-- Search for Superpowers:
-
-  ```bash
-  superpowers
-  ```
-
-- Select `Install Plugin`.
-
-### Codex App
-
-Superpowers is available via the [official Codex plugin marketplace](https://github.com/openai/plugins).
-
-- In the Codex app, click on Plugins in the sidebar.
-- You should see `Superpowers` in the Coding section.
-- Click the `+` next to Superpowers and follow the prompts.
-
-### Factory Droid
-
-- Register the marketplace:
-
-  ```bash
-  droid plugin marketplace add https://github.com/obra/superpowers
-  ```
-
-- Install the plugin:
-
-  ```bash
-  droid plugin install superpowers@superpowers
-  ```
-
-### Gemini CLI
-
-- Install the extension:
-
-  ```bash
-  gemini extensions install https://github.com/obra/superpowers
-  ```
-
-- Update later:
-
-  ```bash
-  gemini extensions update superpowers
-  ```
-
-### OpenCode
-
-OpenCode uses its own plugin install; install Superpowers separately even if you
-already use it in another harness.
-
-- Tell OpenCode:
-
-  ```
-  Fetch and follow instructions from https://raw.githubusercontent.com/obra/superpowers/refs/heads/main/.opencode/INSTALL.md
-  ```
-
-- Detailed docs: [docs/README.opencode.md](docs/README.opencode.md)
-
-### Cursor
-
-- In Cursor Agent chat, install from marketplace:
-
-  ```text
-  /add-plugin superpowers
-  ```
-
-- Or search for "superpowers" in the plugin marketplace.
-
-### GitHub Copilot CLI
-
-- Register the marketplace:
-
-  ```bash
-  copilot plugin marketplace add obra/superpowers-marketplace
-  ```
-
-- Install the plugin:
-
-  ```bash
-  copilot plugin install superpowers@superpowers-marketplace
-  ```
-
-## The Basic Workflow
-
-1. **brainstorming** - Activates before writing code. Refines rough ideas through questions, explores alternatives, presents design in sections for validation. Saves design document.
-
-2. **using-git-worktrees** - Activates after design approval. Creates isolated workspace on new branch, runs project setup, verifies clean test baseline.
-
-3. **writing-plans** - Activates with approved design. Breaks work into bite-sized tasks (2-5 minutes each). Every task has exact file paths, complete code, verification steps.
-
-4. **subagent-driven-development** or **executing-plans** - Activates with plan. Dispatches fresh subagent per task with two-stage review (spec compliance, then code quality), or executes in batches with human checkpoints.
-
-5. **test-driven-development** - Activates during implementation. Enforces RED-GREEN-REFACTOR: write failing test, watch it fail, write minimal code, watch it pass, commit. Deletes code written before tests.
-
-6. **requesting-code-review** - Activates between tasks. Reviews against plan, reports issues by severity. Critical issues block progress.
-
-7. **finishing-a-development-branch** - Activates when tasks complete. Verifies tests, presents options (merge/PR/keep/discard), cleans up worktree.
-
-**The agent checks for relevant skills before any task.** Mandatory workflows, not suggestions.
-
-## What's Inside
-
-### Skills Library
-
-**Testing**
-- **test-driven-development** - RED-GREEN-REFACTOR cycle (includes testing anti-patterns reference)
-
-**Debugging**
-- **systematic-debugging** - 4-phase root cause process (includes root-cause-tracing, defense-in-depth, condition-based-waiting techniques)
-- **verification-before-completion** - Ensure it's actually fixed
-
-**Collaboration** 
-- **brainstorming** - Socratic design refinement
-- **writing-plans** - Detailed implementation plans
-- **executing-plans** - Batch execution with checkpoints
-- **dispatching-parallel-agents** - Concurrent subagent workflows
-- **requesting-code-review** - Pre-review checklist
-- **receiving-code-review** - Responding to feedback
-- **using-git-worktrees** - Parallel development branches
-- **finishing-a-development-branch** - Merge/PR decision workflow
-- **subagent-driven-development** - Fast iteration with two-stage review (spec compliance, then code quality)
-
-**Meta**
-- **writing-skills** - Create new skills following best practices (includes testing methodology)
-- **using-superpowers** - Introduction to the skills system
-
-## Philosophy
-
-- **Test-Driven Development** - Write tests first, always
-- **Systematic over ad-hoc** - Process over guessing
-- **Complexity reduction** - Simplicity as primary goal
-- **Evidence over claims** - Verify before declaring success
-
-Read [the original release announcement](https://blog.fsck.com/2025/10/09/superpowers/).
-
-## Contributing
-
-The general contribution process for Superpowers is below. Keep in mind that we don't generally accept contributions of new skills and that any updates to skills must work across all of the coding agents we support.
-
-1. Fork the repository
-2. Switch to the 'dev' branch
-3. Create a branch for your work
-4. Follow the `writing-skills` skill for creating and testing new and modified skills
-5. Submit a PR, being sure to fill in the pull request template.
-
-See `skills/writing-skills/SKILL.md` for the complete guide.
+`cheneypowers status` prints the package version, the payload directory inside `site-packages`, the install target under `~/.claude/plugins/`, the deploy mode in use, and whether the link is healthy.
 
 ## Updating
 
-Superpowers updates are somewhat coding-agent dependent, but are often automatic.
+```bash
+pip install --upgrade cheneypowers   # or `pip install -e .` after `git pull`
+```
+
+If the deploy mode is `symlink` or `junction`, the upgrade is picked up the next time Claude Code opens a session — no need to rerun `install`. If the deploy mode is `copy`, run `cheneypowers install` again to refresh the payload.
+
+## Uninstalling
+
+```bash
+cheneypowers uninstall   # removes ~/.claude/plugins/cheneypowers
+pip uninstall cheneypowers
+```
+
+Always run `cheneypowers uninstall` *before* `pip uninstall`, otherwise you may leave a dangling symlink that Claude Code will complain about.
+
+## What's Inside — Skills Library
+
+**Testing**
+- **test-driven-development** — RED-GREEN-REFACTOR cycle (with testing anti-patterns reference)
+
+**Debugging**
+- **systematic-debugging** — 4-phase root cause process (root-cause-tracing, defense-in-depth, condition-based-waiting)
+- **verification-before-completion** — confirm it's actually fixed before declaring done
+
+**Collaboration** 
+- **brainstorming** — Socratic design refinement
+- **writing-plans** — detailed implementation plans
+- **executing-plans** — batch execution with checkpoints
+- **dispatching-parallel-agents** — concurrent subagent workflows
+- **requesting-code-review** / **receiving-code-review**
+- **using-git-worktrees** / **finishing-a-development-branch**
+- **subagent-driven-development** — fast iteration with two-stage review
+
+**Meta**
+- **writing-skills** — how to write new skills
+- **using-superpowers** — the bootstrap that loads at session start
+
+> Note on naming: skills are referenced internally as `superpowers:<name>` (e.g. `superpowers:brainstorming`). That namespace is preserved unchanged because skill files cross-reference each other by ID. The project / package / plugin brand is `CheneyPowers` / `cheneypowers`; the skill ID prefix is a separate, stable internal name.
+
+## Philosophy
+
+- **Test-Driven Development** — write tests first, always.
+- **Systematic over ad-hoc** — process over guessing.
+- **Complexity reduction** — simplicity as the primary goal.
+- **Evidence over claims** — verify before declaring success.
 
 ## License
 
-MIT License - see LICENSE file for details
+MIT — see `LICENSE`.
 
-## Community
+## Credits
 
-Superpowers is built by [Jesse Vincent](https://blog.fsck.com) and the rest of the folks at [Prime Radiant](https://primeradiant.com).
-
-- **Discord**: [Join us](https://discord.gg/35wsABTejz) for community support, questions, and sharing what you're building with Superpowers
-- **Issues**: https://github.com/obra/superpowers/issues
-- **Release announcements**: [Sign up](https://primeradiant.com/superpowers/) to get notified about new versions
+Skills content and the SessionStart bootstrap pattern are adapted from [Superpowers](https://github.com/obra/superpowers) by Jesse Vincent. CheneyPowers narrows the scope to Claude Code and adds the Python-based installer; rebranding and packaging by CheneyQiang.
