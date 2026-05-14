@@ -1,0 +1,39 @@
+{
+  "name": "cheneypowers",
+  "version": "0.1.0",
+  "description": "CheneyPowers — personal skills library for Codex: TDD, debugging, collaboration patterns, and proven workflows.",
+  "author": {
+    "name": "CheneyQiang"
+  },
+  "license": "MIT",
+  "keywords": [
+    "codex",
+    "skills",
+    "tdd",
+    "debugging",
+    "collaboration",
+    "workflows"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "CheneyPowers",
+    "shortDescription": "Planning, TDD, debugging, and delivery workflows for coding agents",
+    "longDescription": "CheneyPowers guides agent work through brainstorming, implementation planning, test-driven development, systematic debugging, parallel execution, code review, and finish-the-branch workflows.",
+    "developerName": "CheneyQiang",
+    "category": "Coding",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "I've got an idea for something I'd like to build.",
+      "Let's add a feature to this project."
+    ],
+    "brandColor": "#F59E0B",
+    "composerIcon": "./assets/superpowers-small.svg",
+    "logo": "./assets/app-icon.png",
+    "screenshots": []
+  }
+}
+

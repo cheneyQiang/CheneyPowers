@@ -1,15 +1,28 @@
-"""Deployment logic for the CheneyPowers Claude Code plugin.
+"""Deployment logic for the CheneyPowers plugin.
 
-The installer makes the plugin payload visible to Claude Code by placing it at
-``~/.claude/plugins/cheneypowers``. Three deployment modes are supported:
+Three target platforms are supported, each with its own adapter:
+
+* ``claude``  — Claude Code: ``~/.claude/plugins/cheneypowers/`` containing
+  the four payload entries (``.claude-plugin``, ``hooks``, ``skills``, ``assets``)
+  as symlinks back into the source repo.
+* ``codex``   — Codex: ``~/.codex/plugins/cheneypowers/`` with the same four
+  entries (substituting ``.codex-plugin`` for ``.claude-plugin``). Also
+  registers the plugin in ``~/.codex/config.toml`` under
+  ``[plugins."cheneypowers@cheneypowers-local"]``.
+* ``catpaw``  — CatPaw / CatDesk: each skill is symlinked individually into
+  ``~/.catpaw/skills/cheneypowers-<name>/``. CatPaw has no plugin metadata
+  format so only the skill files are deployed (auto-trigger via SessionStart
+  is not supported on CatPaw — explicit invocation only).
+
+Three deployment modes are supported per target:
 
 * ``symlink``  — ``os.symlink`` (POSIX, or Windows with Developer Mode)
 * ``junction`` — Windows directory junction via ``mklink /J``
 * ``copy``     — full directory copy
 
-When mode is ``symlink`` or ``junction``, upgrading the package via pip is
-picked up by Claude Code immediately (next session). In ``copy`` mode the user
-must rerun ``cheneypowers install`` after every upgrade.
+In ``symlink``/``junction`` modes, package upgrades are picked up by the host
+immediately (next session). In ``copy`` mode the user must rerun
+``cheneypowers install`` after every upgrade.
 """
 
 from __future__ import annotations
@@ -22,12 +35,12 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Literal, Optional
+from typing import Callable, Iterable, Literal, Optional
 
 from . import payload_dir
 
 # ---------------------------------------------------------------------------
-# Exit codes (kept in sync with PRD §5.4)
+# Exit codes
 # ---------------------------------------------------------------------------
 EXIT_OK = 0
 EXIT_GENERIC = 1
@@ -36,12 +49,19 @@ EXIT_UNSUPPORTED_MODE = 3
 
 DeployMode = Literal["symlink", "junction", "copy", "auto"]
 ResolvedMode = Literal["symlink", "junction", "copy"]
+TargetName = Literal["claude", "codex", "catpaw"]
+ALL_TARGETS: tuple[TargetName, ...] = ("claude", "codex", "catpaw")
 
-DEFAULT_TARGET_NAME = "cheneypowers"
+DEFAULT_PLUGIN_NAME = "cheneypowers"
+CATPAW_SKILL_PREFIX = "cheneypowers-"
+CODEX_MARKETPLACE_NAME = "cheneypowers-local"
+
+# Codex `[plugins."<name>@<marketplace>"]` key once registered in config.toml.
+CODEX_PLUGIN_KEY = f'plugins."{DEFAULT_PLUGIN_NAME}@{CODEX_MARKETPLACE_NAME}"'
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Errors / result type
 # ---------------------------------------------------------------------------
 
 
@@ -55,28 +75,24 @@ class InstallError(RuntimeError):
 
 @dataclass
 class InstallResult:
-    target: Path
+    target_name: TargetName
+    target_path: Path
     mode: ResolvedMode
     payload: Path
     backed_up_to: Optional[Path] = None
+    extra: Optional[str] = None  # human-readable post-install note
 
 
-def default_target() -> Path:
-    """``~/.claude/plugins/cheneypowers`` by default."""
-    return Path.home() / ".claude" / "plugins" / DEFAULT_TARGET_NAME
+# ---------------------------------------------------------------------------
+# Platform helpers
+# ---------------------------------------------------------------------------
 
 
 def is_windows() -> bool:
     return platform.system() == "Windows"
 
 
-# ---------------------------------------------------------------------------
-# Inspection
-# ---------------------------------------------------------------------------
-
-
 def _readlink(path: Path) -> Optional[Path]:
-    """Return ``path``'s symlink target, or ``None`` if it isn't a symlink."""
     try:
         if path.is_symlink():
             return Path(os.readlink(path))
@@ -86,12 +102,6 @@ def _readlink(path: Path) -> Optional[Path]:
 
 
 def _is_junction(path: Path) -> bool:
-    """Return True if ``path`` is a Windows directory junction.
-
-    Junctions are reparse points that are not symlinks; ``Path.is_symlink``
-    returns False for them. We probe via ``os.path.realpath`` differing from
-    the original path *and* the path being a directory.
-    """
     if not is_windows():
         return False
     try:
@@ -102,67 +112,6 @@ def _is_junction(path: Path) -> bool:
         return False
 
 
-def detect_mode(target: Path) -> Optional[ResolvedMode]:
-    """Detect how an existing target was deployed.
-
-    The target itself is always a real directory; we look at its
-    ``.claude-plugin`` child to figure out whether the payload entries
-    inside were deployed via symlink, junction, or copy.
-    """
-    if not target.exists() or not target.is_dir():
-        return None
-    probe = target / ".claude-plugin"
-    if not probe.exists() and not probe.is_symlink():
-        return None
-    if probe.is_symlink():
-        return "symlink"
-    if _is_junction(probe):
-        return "junction"
-    if probe.is_dir():
-        return "copy"
-    return None
-
-
-def is_managed_target(target: Path) -> bool:
-    """Heuristic: did *we* create this target?
-
-    A target is "managed" if it points to (or is a copy of) the payload that
-    this currently-installed package ships. We check for the marker file
-    ``.claude-plugin/plugin.json`` plus matching plugin name.
-    """
-    marker = target / ".claude-plugin" / "plugin.json"
-    if not marker.is_file():
-        return False
-    try:
-        import json
-
-        data = json.loads(marker.read_text(encoding="utf-8"))
-        return data.get("name") == DEFAULT_TARGET_NAME
-    except (OSError, ValueError):
-        return False
-
-
-def link_health(target: Path) -> str:
-    """Return one of: ``healthy`` / ``broken`` / ``missing``.
-
-    The target itself is always a real directory once installed. ``healthy``
-    means at least the ``.claude-plugin`` payload entry exists and (if it is
-    a symlink/junction) resolves to a real directory.
-    """
-    if not target.exists() or not target.is_dir():
-        return "missing"
-    probe = target / ".claude-plugin"
-    if not probe.exists() and not probe.is_symlink():
-        return "missing"
-    if probe.is_symlink():
-        try:
-            resolved = probe.resolve(strict=True)
-        except (OSError, RuntimeError):
-            return "broken"
-        return "healthy" if resolved.is_dir() else "broken"
-    return "healthy" if probe.is_dir() else "broken"
-
-
 # ---------------------------------------------------------------------------
 # Mode resolution
 # ---------------------------------------------------------------------------
@@ -171,8 +120,6 @@ def link_health(target: Path) -> str:
 def _resolve_mode(requested: DeployMode) -> ResolvedMode:
     if requested != "auto":
         return _validate_mode(requested)
-    # Auto pick: symlink everywhere; if it fails on Windows, install() will
-    # fall back to junction, then copy.
     return "symlink"
 
 
@@ -188,7 +135,7 @@ def _validate_mode(mode: DeployMode) -> ResolvedMode:
 
 
 # ---------------------------------------------------------------------------
-# Deploy primitives
+# Filesystem primitives — the only place we touch real disk
 # ---------------------------------------------------------------------------
 
 
@@ -197,7 +144,7 @@ def _ensure_parent(target: Path) -> None:
 
 
 def _remove_existing(target: Path) -> None:
-    """Remove a path that we know we own, in any of its forms."""
+    """Remove anything at ``target`` that we own (symlink / dir / file)."""
     if target.is_symlink():
         target.unlink()
         return
@@ -214,49 +161,21 @@ def _backup_existing(target: Path) -> Path:
     return backup
 
 
-# Subdirectories that constitute the actual Claude Code plugin payload.
-# We deploy each one individually rather than linking the whole payload dir,
-# so that editable installs (where payload_dir resolves to the repo root)
-# don't leak src/, docs/, tests/, pyproject.toml, etc. into the plugin folder.
-_PAYLOAD_ENTRIES = (".claude-plugin", "hooks", "skills", "assets")
+def _link_one(src: Path, dest: Path, mode: ResolvedMode) -> None:
+    """Place ``src`` at ``dest`` according to ``mode``.
 
-
-def _payload_entries(payload: Path) -> list[Path]:
-    entries: list[Path] = []
-    for name in _PAYLOAD_ENTRIES:
-        candidate = payload / name
-        if candidate.exists():
-            entries.append(candidate)
-    if not entries:
-        raise InstallError(
-            f"No plugin payload entries found under {payload}. Expected at "
-            f"least one of: {', '.join(_PAYLOAD_ENTRIES)}.",
-            EXIT_GENERIC,
-        )
-    return entries
-
-
-def _do_symlink(target: Path, payload: Path) -> None:
-    target.mkdir(parents=True, exist_ok=False)
-    for entry in _payload_entries(payload):
-        os.symlink(
-            str(entry),
-            str(target / entry.name),
-            target_is_directory=entry.is_dir(),
-        )
-
-
-def _do_junction(target: Path, payload: Path) -> None:
-    if not is_windows():
-        raise InstallError(
-            "Directory junctions are a Windows-only feature.",
-            EXIT_UNSUPPORTED_MODE,
-        )
-    target.mkdir(parents=True, exist_ok=False)
-    for entry in _payload_entries(payload):
-        # ``mklink /J`` is a cmd.exe builtin; shell=True is required.
-        link = target / entry.name
-        cmd = f'mklink /J "{link}" "{entry}"'
+    The caller is responsible for ensuring ``dest`` does not already exist.
+    """
+    if mode == "symlink":
+        os.symlink(str(src), str(dest), target_is_directory=src.is_dir())
+        return
+    if mode == "junction":
+        if not is_windows():
+            raise InstallError(
+                "Directory junctions are a Windows-only feature.",
+                EXIT_UNSUPPORTED_MODE,
+            )
+        cmd = f'mklink /J "{dest}" "{src}"'
         completed = subprocess.run(cmd, shell=True, capture_output=True, text=True)
         if completed.returncode != 0:
             raise InstallError(
@@ -264,16 +183,345 @@ def _do_junction(target: Path, payload: Path) -> None:
                 + (completed.stderr.strip() or completed.stdout.strip() or "unknown error"),
                 EXIT_GENERIC,
             )
+        return
+    # copy
+    if src.is_dir():
+        shutil.copytree(str(src), str(dest))
+    else:
+        shutil.copy2(str(src), str(dest))
 
 
-def _do_copy(target: Path, payload: Path) -> None:
-    target.mkdir(parents=True, exist_ok=False)
-    for entry in _payload_entries(payload):
-        dest = target / entry.name
-        if entry.is_dir():
-            shutil.copytree(str(entry), str(dest))
-        else:
-            shutil.copy2(str(entry), str(dest))
+# ---------------------------------------------------------------------------
+# Target adapters
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _TargetAdapter:
+    name: TargetName
+    target_path: Path
+    # entries inside the source repo to deploy, plus their dest names
+    # (relative to target_path). For Claude/Codex this is a fixed set; for
+    # CatPaw it is computed dynamically from skills/.
+    entries_fn: Callable[[Path], list[tuple[Path, str]]]
+    # marker file inside the target whose existence/format identifies a
+    # managed deployment.
+    marker_relpath: str
+    # human-friendly post-install note.
+    note: str = ""
+    # called after deploy + after uninstall (for config.toml etc.)
+    post_install: Optional[Callable[[Path], None]] = None
+    post_uninstall: Optional[Callable[[Path], None]] = None
+
+
+# Default Claude/Codex payload entries (one symlink per top-level dir):
+#  - .claude-plugin / .codex-plugin (the manifest)
+#  - hooks (Claude Code & Codex share the same hook protocol)
+#  - skills (the actual content)
+#  - assets (icons)
+_CLAUDE_ENTRIES = (".claude-plugin", "hooks", "skills", "assets")
+_CODEX_ENTRIES = (".codex-plugin", "hooks", "skills", "assets")
+
+
+def _claude_entries(payload: Path) -> list[tuple[Path, str]]:
+    """Return [(src, dest_name), ...] for Claude Code."""
+    return [
+        (payload / name, name)
+        for name in _CLAUDE_ENTRIES
+        if (payload / name).exists()
+    ]
+
+
+def _codex_entries(payload: Path) -> list[tuple[Path, str]]:
+    """Return [(src, dest_name), ...] for Codex."""
+    return [
+        (payload / name, name)
+        for name in _CODEX_ENTRIES
+        if (payload / name).exists()
+    ]
+
+
+def _catpaw_entries(payload: Path) -> list[tuple[Path, str]]:
+    """Return [(src, dest_name), ...] for CatPaw.
+
+    Each skill becomes its own ``cheneypowers-<skill-name>`` symlink directly
+    under ``~/.catpaw/skills/``. CatPaw has no plugin/hooks integration so we
+    only deploy skill folders.
+    """
+    skills_dir = payload / "skills"
+    if not skills_dir.is_dir():
+        return []
+    out: list[tuple[Path, str]] = []
+    for child in sorted(skills_dir.iterdir()):
+        if not child.is_dir():
+            continue
+        if not (child / "SKILL.md").is_file():
+            continue
+        out.append((child, f"{CATPAW_SKILL_PREFIX}{child.name}"))
+    return out
+
+
+def _claude_target_dir() -> Path:
+    return Path.home() / ".claude" / "plugins" / DEFAULT_PLUGIN_NAME
+
+
+def _codex_target_dir() -> Path:
+    return Path.home() / ".codex" / "plugins" / DEFAULT_PLUGIN_NAME
+
+
+def _catpaw_target_dir() -> Path:
+    return Path.home() / ".catpaw" / "skills"
+
+
+def _adapter_for(target: TargetName) -> _TargetAdapter:
+    if target == "claude":
+        return _TargetAdapter(
+            name="claude",
+            target_path=_claude_target_dir(),
+            entries_fn=_claude_entries,
+            marker_relpath=".claude-plugin/plugin.json",
+            note="Open a new Claude Code session to load the plugin.",
+        )
+    if target == "codex":
+        return _TargetAdapter(
+            name="codex",
+            target_path=_codex_target_dir(),
+            entries_fn=_codex_entries,
+            marker_relpath=".codex-plugin/plugin.json",
+            note=(
+                "Codex registered. Open a new Codex session to load the plugin."
+            ),
+            post_install=_codex_register_in_config,
+            post_uninstall=_codex_unregister_from_config,
+        )
+    if target == "catpaw":
+        return _TargetAdapter(
+            name="catpaw",
+            target_path=_catpaw_target_dir(),
+            entries_fn=_catpaw_entries,
+            # we use the first cheneypowers- entry as the marker
+            marker_relpath=f"{CATPAW_SKILL_PREFIX}using-superpowers/SKILL.md",
+            note=(
+                "CatPaw / CatDesk: skills installed under ~/.catpaw/skills/cheneypowers-*. "
+                "Auto-trigger is not supported on CatPaw; invoke skills explicitly."
+            ),
+        )
+    raise InstallError(f"Unknown target: {target}", EXIT_GENERIC)
+
+
+# ---------------------------------------------------------------------------
+# Inspection (per-target)
+# ---------------------------------------------------------------------------
+
+
+def _detect_mode_at(probe: Path) -> Optional[ResolvedMode]:
+    """How was ``probe`` deployed (symlink / junction / copy)?"""
+    if not probe.exists() and not probe.is_symlink():
+        return None
+    if probe.is_symlink():
+        return "symlink"
+    if _is_junction(probe):
+        return "junction"
+    if probe.is_dir() or probe.is_file():
+        return "copy"
+    return None
+
+
+def _claude_managed_entries(target: Path) -> list[Path]:
+    """For Claude/Codex: list the four payload entries currently inside target."""
+    if not target.is_dir():
+        return []
+    return [target / name for name in _CLAUDE_ENTRIES if (target / name).exists() or (target / name).is_symlink()]
+
+
+def _catpaw_managed_entries(target: Path) -> list[Path]:
+    """For CatPaw: list all ~/.catpaw/skills/cheneypowers-* entries."""
+    if not target.is_dir():
+        return []
+    return sorted(
+        p for p in target.iterdir() if p.name.startswith(CATPAW_SKILL_PREFIX)
+    )
+
+
+def _is_managed(adapter: _TargetAdapter) -> bool:
+    """Heuristic: did *we* create something at ``adapter.target_path``?
+
+    Claude/Codex: marker file ``<target>/.{claude,codex}-plugin/plugin.json``
+    contains ``"name": "cheneypowers"``.
+    CatPaw: at least one ``cheneypowers-*`` skill directory exists under
+    ``~/.catpaw/skills/`` and has a SKILL.md inside.
+    """
+    if adapter.name == "catpaw":
+        return any(
+            (entry / "SKILL.md").exists() or (entry / "SKILL.md").is_symlink()
+            for entry in _catpaw_managed_entries(adapter.target_path)
+        )
+
+    marker = adapter.target_path / adapter.marker_relpath
+    if not marker.is_file():
+        return False
+    try:
+        import json
+
+        data = json.loads(marker.read_text(encoding="utf-8"))
+        return data.get("name") == DEFAULT_PLUGIN_NAME
+    except (OSError, ValueError):
+        return False
+
+
+def _detect_mode(adapter: _TargetAdapter) -> Optional[ResolvedMode]:
+    if adapter.name == "catpaw":
+        entries = _catpaw_managed_entries(adapter.target_path)
+        if not entries:
+            return None
+        return _detect_mode_at(entries[0])
+    probe = adapter.target_path / adapter.marker_relpath.split("/")[0]
+    return _detect_mode_at(probe)
+
+
+def _link_health(adapter: _TargetAdapter) -> str:
+    """healthy / broken / missing for this adapter."""
+    if adapter.name == "catpaw":
+        entries = _catpaw_managed_entries(adapter.target_path)
+        if not entries:
+            return "missing"
+        # if any entry is a broken symlink, mark broken; otherwise healthy
+        for entry in entries:
+            if entry.is_symlink():
+                try:
+                    entry.resolve(strict=True)
+                except (OSError, RuntimeError):
+                    return "broken"
+            elif not entry.exists():
+                return "broken"
+        return "healthy"
+
+    probe = adapter.target_path / adapter.marker_relpath.split("/")[0]
+    if not probe.exists() and not probe.is_symlink():
+        return "missing"
+    if probe.is_symlink():
+        try:
+            resolved = probe.resolve(strict=True)
+        except (OSError, RuntimeError):
+            return "broken"
+        return "healthy" if resolved.is_dir() else "broken"
+    return "healthy" if probe.is_dir() else "broken"
+
+
+# ---------------------------------------------------------------------------
+# Codex config.toml registration
+# ---------------------------------------------------------------------------
+
+
+def _codex_config_path() -> Path:
+    return Path.home() / ".codex" / "config.toml"
+
+
+def _codex_register_in_config(payload: Path) -> None:
+    """Register CheneyPowers in ``~/.codex/config.toml``.
+
+    We need to add (or update):
+      [marketplaces.cheneypowers-local]
+      source_type = "local"
+      source = "<absolute path to repo root>"
+
+      [plugins."cheneypowers@cheneypowers-local"]
+      enabled = true
+
+    Done with simple line-based edits to keep the existing file's comments
+    and other entries intact.
+    """
+    cfg = _codex_config_path()
+    if not cfg.parent.is_dir():
+        cfg.parent.mkdir(parents=True, exist_ok=True)
+    text = cfg.read_text(encoding="utf-8") if cfg.is_file() else ""
+
+    payload_str = str(payload.resolve())
+    marketplace_block = (
+        f"[marketplaces.{CODEX_MARKETPLACE_NAME}]\n"
+        f'source_type = "local"\n'
+        f'source = "{payload_str}"\n'
+    )
+    plugin_block = (
+        f"[{CODEX_PLUGIN_KEY}]\n"
+        f"enabled = true\n"
+    )
+
+    # Ensure existing content ends with a blank line before we append.
+    if text and not text.endswith("\n\n"):
+        text = text.rstrip("\n") + "\n\n"
+
+    text = _toml_upsert_block(
+        text,
+        section_header=f"[marketplaces.{CODEX_MARKETPLACE_NAME}]",
+        new_block=marketplace_block.lstrip(),
+    )
+    # Blank line between the two appended sections for readability.
+    if not text.endswith("\n\n"):
+        text = text.rstrip("\n") + "\n\n"
+    text = _toml_upsert_block(
+        text,
+        section_header=f"[{CODEX_PLUGIN_KEY}]",
+        new_block=plugin_block.lstrip(),
+    )
+
+    if not text.endswith("\n"):
+        text += "\n"
+    cfg.write_text(text, encoding="utf-8")
+
+
+def _codex_unregister_from_config(payload: Path) -> None:
+    """Remove the two blocks we added in ``_codex_register_in_config``."""
+    cfg = _codex_config_path()
+    if not cfg.is_file():
+        return
+    text = cfg.read_text(encoding="utf-8")
+    text = _toml_remove_block(text, f"[marketplaces.{CODEX_MARKETPLACE_NAME}]")
+    text = _toml_remove_block(text, f"[{CODEX_PLUGIN_KEY}]")
+    cfg.write_text(text, encoding="utf-8")
+
+
+def _toml_upsert_block(text: str, *, section_header: str, new_block: str) -> str:
+    """Replace the TOML block starting with ``section_header`` (or append)."""
+    lines = text.splitlines()
+    start = _find_section_start(lines, section_header)
+    if start is None:
+        # append
+        sep = "" if not text or text.endswith("\n") else "\n"
+        if not new_block.startswith("\n"):
+            new_block = "\n" + new_block
+        return text + sep + new_block.lstrip("\n") + ("" if new_block.endswith("\n") else "\n")
+    end = _find_section_end(lines, start + 1)
+    return "\n".join(lines[:start]) + ("\n" if start > 0 else "") + new_block.rstrip("\n") + "\n" + "\n".join(lines[end:])
+
+
+def _toml_remove_block(text: str, section_header: str) -> str:
+    lines = text.splitlines()
+    start = _find_section_start(lines, section_header)
+    if start is None:
+        return text
+    end = _find_section_end(lines, start + 1)
+    # also drop the trailing blank line if present
+    while end < len(lines) and lines[end].strip() == "":
+        end += 1
+        break
+    return "\n".join(lines[:start] + lines[end:]).rstrip() + "\n"
+
+
+def _find_section_start(lines: list[str], header: str) -> Optional[int]:
+    needle = header.strip()
+    for i, line in enumerate(lines):
+        if line.strip() == needle:
+            return i
+    return None
+
+
+def _find_section_end(lines: list[str], from_index: int) -> int:
+    for j in range(from_index, len(lines)):
+        s = lines[j].strip()
+        if s.startswith("[") and s.endswith("]"):
+            return j
+    return len(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -282,51 +530,93 @@ def _do_copy(target: Path, payload: Path) -> None:
 
 
 def install(
+    target_name: TargetName,
     *,
-    target: Optional[Path] = None,
     mode: DeployMode = "auto",
     force: bool = False,
 ) -> InstallResult:
-    """Deploy the plugin payload to ``target``.
+    """Deploy the plugin payload for one target.
 
     Parameters
     ----------
-    target:
-        Destination path. Defaults to ``~/.claude/plugins/cheneypowers``.
+    target_name:
+        ``"claude"``, ``"codex"`` or ``"catpaw"``.
     mode:
         ``symlink`` | ``junction`` | ``copy`` | ``auto``.
     force:
-        If the target already exists and is *not* a managed CheneyPowers
-        deployment, ``force=True`` renames it to ``<target>.bak.<ts>``
-        instead of failing. A managed target is always replaced.
+        For Claude/Codex: replace the target if it exists and isn't ours.
+        For CatPaw: also overwrite individual ``cheneypowers-*`` skill
+        directories that aren't symlinks pointing at our repo.
     """
     payload = payload_dir()
-    target = target or default_target()
-    _ensure_parent(target)
+    adapter = _adapter_for(target_name)
+    target = adapter.target_path
 
     backed_up: Optional[Path] = None
 
-    # If target already points at a managed deployment, treat install as
-    # idempotent: just refresh it.
-    if (target.exists() or target.is_symlink()) and is_managed_target(target):
-        _remove_existing(target)
-    elif target.exists() or target.is_symlink():
-        if not force:
-            raise InstallError(
-                f"Target {target} already exists and is not a CheneyPowers "
-                "deployment. Pass --force to back it up and replace it.",
-                EXIT_TARGET_OCCUPIED,
-            )
-        backed_up = _backup_existing(target)
+    if adapter.name == "catpaw":
+        # ~/.catpaw/skills/ is a shared directory; we don't own it. We only
+        # manage the cheneypowers-* entries inside it.
+        target.mkdir(parents=True, exist_ok=True)
+        _catpaw_clean_managed(target, force=force)
+    else:
+        _ensure_parent(target)
+        if (target.exists() or target.is_symlink()) and _is_managed(adapter):
+            _remove_existing(target)
+        elif target.exists() or target.is_symlink():
+            if not force:
+                raise InstallError(
+                    f"Target {target} already exists and is not a CheneyPowers "
+                    "deployment. Pass --force to back it up and replace it.",
+                    EXIT_TARGET_OCCUPIED,
+                )
+            backed_up = _backup_existing(target)
+        target.mkdir(parents=True, exist_ok=False)
 
     resolved = _resolve_mode(mode)
-    used = _attempt_deploy(target, payload, resolved, fallback=mode == "auto")
+    used = _attempt_deploy(adapter, payload, resolved, fallback=mode == "auto")
 
-    return InstallResult(target=target, mode=used, payload=payload, backed_up_to=backed_up)
+    if adapter.post_install is not None:
+        try:
+            adapter.post_install(payload)
+        except Exception as exc:  # noqa: BLE001
+            raise InstallError(
+                f"Payload deployed, but post-install step failed: {exc}",
+                EXIT_GENERIC,
+            ) from exc
+
+    return InstallResult(
+        target_name=adapter.name,
+        target_path=target,
+        mode=used,
+        payload=payload,
+        backed_up_to=backed_up,
+        extra=adapter.note,
+    )
+
+
+def _catpaw_clean_managed(skills_dir: Path, *, force: bool) -> None:
+    """Remove any existing ``cheneypowers-*`` entries we previously installed.
+
+    If ``force=False``, we only remove entries that are symlinks (assumed to
+    be ours). If ``force=True``, we also remove plain dirs/files matching
+    the prefix.
+    """
+    for entry in _catpaw_managed_entries(skills_dir):
+        if entry.is_symlink():
+            entry.unlink()
+        elif force:
+            _remove_existing(entry)
+        else:
+            raise InstallError(
+                f"Refusing to overwrite non-symlink CatPaw skill: {entry}. "
+                "Pass --force to delete and replace it.",
+                EXIT_TARGET_OCCUPIED,
+            )
 
 
 def _attempt_deploy(
-    target: Path,
+    adapter: _TargetAdapter,
     payload: Path,
     primary: ResolvedMode,
     *,
@@ -336,7 +626,7 @@ def _attempt_deploy(
     if fallback and primary == "symlink" and is_windows():
         chain = ("symlink", "junction", "copy")
     elif fallback and primary == "symlink":
-        chain = ("symlink",)  # POSIX: no useful fallback
+        chain = ("symlink",)
     elif fallback and primary == "junction":
         chain = ("junction", "copy")
     else:
@@ -345,72 +635,126 @@ def _attempt_deploy(
     last_error: Optional[BaseException] = None
     for candidate in chain:
         try:
-            if candidate == "symlink":
-                _do_symlink(target, payload)
-            elif candidate == "junction":
-                _do_junction(target, payload)
-            else:
-                _do_copy(target, payload)
+            _deploy_with_mode(adapter, payload, candidate)
             return candidate
         except (OSError, InstallError) as exc:
             last_error = exc
-            # Clean any partial result before the next attempt.
-            if target.exists() or target.is_symlink():
-                try:
-                    _remove_existing(target)
-                except OSError:
-                    pass
+            _undo_partial(adapter)
             continue
 
     if isinstance(last_error, InstallError):
         raise last_error
     raise InstallError(
-        f"Could not deploy plugin via any of {list(chain)}: {last_error}",
+        f"Could not deploy {adapter.name} via any of {list(chain)}: {last_error}",
         EXIT_GENERIC,
     )
 
 
-def uninstall(*, target: Optional[Path] = None, force: bool = False) -> bool:
-    """Remove a previously-installed deployment.
+def _deploy_with_mode(
+    adapter: _TargetAdapter, payload: Path, mode: ResolvedMode
+) -> None:
+    entries = adapter.entries_fn(payload)
+    if not entries:
+        raise InstallError(
+            f"No payload entries found for target '{adapter.name}'. "
+            "Did the package get built correctly?",
+            EXIT_GENERIC,
+        )
+    for src, dest_name in entries:
+        dest = adapter.target_path / dest_name
+        if dest.exists() or dest.is_symlink():
+            _remove_existing(dest)
+        _link_one(src, dest, mode)
 
-    Returns ``True`` if something was removed, ``False`` if there was nothing
-    to do.
+
+def _undo_partial(adapter: _TargetAdapter) -> None:
+    """Roll back a partial deploy attempt (best-effort)."""
+    if adapter.name == "catpaw":
+        for entry in _catpaw_managed_entries(adapter.target_path):
+            try:
+                _remove_existing(entry)
+            except OSError:
+                pass
+        return
+    if adapter.target_path.exists() or adapter.target_path.is_symlink():
+        try:
+            _remove_existing(adapter.target_path)
+        except OSError:
+            pass
+
+
+def uninstall(target_name: TargetName, *, force: bool = False) -> bool:
+    """Remove a previously-installed deployment for one target.
+
+    Returns True if anything was removed.
     """
-    target = target or default_target()
-    if not target.exists() and not target.is_symlink():
-        return False
-
-    if not is_managed_target(target) and not target.is_symlink():
-        # A regular directory at our path that isn't ours: refuse without
-        # --force to avoid wiping out the user's data.
-        if not force:
-            raise InstallError(
-                f"Refusing to remove {target}: it does not look like a "
-                "CheneyPowers deployment. Pass --force to delete anyway.",
-                EXIT_TARGET_OCCUPIED,
-            )
-
-    _remove_existing(target)
-    return True
-
-
-def status(*, target: Optional[Path] = None) -> dict:
-    """Return a dict describing the current deployment state."""
-    target = target or default_target()
     payload = payload_dir()
-    detected = detect_mode(target)
+    adapter = _adapter_for(target_name)
+    removed_anything = False
+
+    if adapter.name == "catpaw":
+        for entry in _catpaw_managed_entries(adapter.target_path):
+            if entry.is_symlink() or force:
+                try:
+                    _remove_existing(entry)
+                    removed_anything = True
+                except OSError:
+                    pass
+            else:
+                raise InstallError(
+                    f"Refusing to remove non-symlink CatPaw skill: {entry}. "
+                    "Pass --force to delete it.",
+                    EXIT_TARGET_OCCUPIED,
+                )
+    else:
+        target = adapter.target_path
+        if not target.exists() and not target.is_symlink():
+            removed_anything = False
+        else:
+            if not _is_managed(adapter) and not target.is_symlink():
+                if not force:
+                    raise InstallError(
+                        f"Refusing to remove {target}: it does not look like a "
+                        "CheneyPowers deployment. Pass --force to delete anyway.",
+                        EXIT_TARGET_OCCUPIED,
+                    )
+            _remove_existing(target)
+            removed_anything = True
+
+    if adapter.post_uninstall is not None:
+        try:
+            adapter.post_uninstall(payload)
+        except Exception:  # noqa: BLE001
+            # don't fail uninstall just because we couldn't tidy a config file
+            pass
+
+    return removed_anything
+
+
+def status_one(target_name: TargetName) -> dict:
+    payload = payload_dir()
+    adapter = _adapter_for(target_name)
     return {
-        "package_version": _package_version(),
+        "target_name": adapter.name,
+        "target_path": adapter.target_path,
         "payload": payload,
-        "target": target,
-        "mode": detected,
-        "health": link_health(target),
-        "managed": is_managed_target(target) if target.exists() else False,
+        "mode": _detect_mode(adapter),
+        "health": _link_health(adapter),
+        "managed": _is_managed(adapter),
+        "package_version": _package_version(),
     }
 
 
+def status_all() -> list[dict]:
+    return [status_one(t) for t in ALL_TARGETS]
+
+
+# ---------------------------------------------------------------------------
+# Misc helpers
+# ---------------------------------------------------------------------------
+
+
 def _package_version() -> str:
-    # Defer the import to avoid a circular reference at module-import time.
     from . import __version__ as v
 
     return v

@@ -1,0 +1,21 @@
+{
+  "name": "cheneypowers-local",
+  "interface": {
+    "displayName": "CheneyPowers (Local)"
+  },
+  "plugins": [
+    {
+      "name": "cheneypowers",
+      "source": {
+        "source": "local",
+        "path": "./"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "NONE"
+      },
+      "category": "Coding"
+    }
+  ]
+}
+
