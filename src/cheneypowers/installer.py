@@ -352,8 +352,11 @@ def _is_managed(adapter: _TargetAdapter) -> bool:
     ``~/.catpaw/skills/`` and has a SKILL.md inside.
     """
     if adapter.name == "catpaw":
+        # Managed if at least one cheneypowers-* entry exists AND its
+        # SKILL.md resolves to a real file (catches dead links and
+        # third-party renames like super-assistant's .disabled-by-* suffix).
         return any(
-            (entry / "SKILL.md").exists() or (entry / "SKILL.md").is_symlink()
+            (entry / "SKILL.md").is_file()
             for entry in _catpaw_managed_entries(adapter.target_path)
         )
 
@@ -385,7 +388,11 @@ def _link_health(adapter: _TargetAdapter) -> str:
         entries = _catpaw_managed_entries(adapter.target_path)
         if not entries:
             return "missing"
-        # if any entry is a broken symlink, mark broken; otherwise healthy
+        # An entry is healthy iff (a) the link/dir resolves AND
+        # (b) SKILL.md is a real file inside it. (b) catches the case
+        # where some external tool renamed SKILL.md (e.g. to
+        # SKILL.md.disabled-by-super-assistant), which silently breaks
+        # skill loading on every harness even though the symlink is fine.
         for entry in entries:
             if entry.is_symlink():
                 try:
@@ -393,6 +400,8 @@ def _link_health(adapter: _TargetAdapter) -> str:
                 except (OSError, RuntimeError):
                     return "broken"
             elif not entry.exists():
+                return "broken"
+            if not (entry / "SKILL.md").is_file():
                 return "broken"
         return "healthy"
 
